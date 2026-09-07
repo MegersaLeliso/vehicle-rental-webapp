@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Metro Wheels — Dispatch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #E9EBEC;
+    --ink-dim: #9AA2AA;
+    --base: #1B1E22;
+    --panel: #24282D;
+    --panel-line: #33383E;
+    --go: #3FCB7E;
+    --stop: #FF5F45;
+    --amber: #F2B705;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--base);
+    color: var(--ink);
+    font-family: 'Inter', sans-serif;
+    min-height: 100vh;
+  }
+
+  .plate-font {
+    font-family: 'Barlow Condensed', sans-serif;
+    letter-spacing: 0.02em;
+  }
+
+  header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 28px 36px 20px;
+    border-bottom: 1px solid var(--panel-line);
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  header h1 {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-weight: 700;
+    font-size: 34px;
+    margin: 0;
+    letter-spacing: 0.01em;
+  }
+
+  header h1 span { color: var(--ink-dim); font-weight: 500; }
+
+  .stat-strip {
+    display: flex;
+    gap: 28px;
+    font-family: 'Barlow Condensed', sans-serif;
+  }
+
+  .stat-strip div { text-align: right; }
+  .stat-strip .num { font-size: 26px; font-weight: 700; display: block; line-height: 1; }
+  .stat-strip .label { font-size: 13px; color: var(--ink-dim); }
+
+  main {
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    gap: 24px;
+    padding: 28px 36px 40px;
+    align-items: start;
+  }
+
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; }
+  }
+
+  .section-title {
+    font-size: 13px;
+    color: var(--ink-dim);
+    margin: 0 0 14px;
+    font-weight: 500;
+  }
+
+  .fleet-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    gap: 16px;
+  }
+
+  .ticket {
+    background: var(--panel);
+    border: 1px solid var(--panel-line);
+    padding: 16px 16px 14px;
+    position: relative;
+    clip-path: polygon(0 0, 100% 0, 100% 100%, 18px 100%, 0 calc(100% - 18px));
+  }
+
+  .ticket .status-tab {
+    position: absolute;
+    top: 0;
+    right: 0;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 10px;
+    letter-spacing: 0.03em;
+  }
+
+  .ticket.available .status-tab { background: var(--go); color: #0C2116; }
+  .ticket.rented .status-tab { background: var(--stop); color: #2B0C06; }
+
+  .ticket .type {
+    font-size: 12px;
+    color: var(--ink-dim);
+    margin-bottom: 2px;
+  }
+
+  .ticket .plate {
+    font-size: 30px;
+    font-weight: 700;
+    line-height: 1;
+    margin-bottom: 6px;
+  }
+
+  .ticket .make-model {
+    font-size: 14px;
+    color: var(--ink-dim);
+    margin-bottom: 12px;
+  }
+
+  .ticket .row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    padding: 3px 0;
+    border-top: 1px solid var(--panel-line);
+  }
+
+  .ticket .row:first-of-type { border-top: none; }
+
+  .ticket .rate { color: var(--amber); font-weight: 600; }
+
+  .console {
+    background: var(--panel);
+    border: 1px solid var(--panel-line);
+    padding: 20px;
+    position: sticky;
+    top: 24px;
+  }
+
+  .console h2 {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 20px;
+    font-weight: 600;
+    margin: 0 0 16px;
+  }
+
+  label {
+    display: block;
+    font-size: 12px;
+    color: var(--ink-dim);
+    margin: 14px 0 6px;
+  }
+
+  select, input {
+    width: 100%;
+    background: var(--base);
+    border: 1px solid var(--panel-line);
+    color: var(--ink);
+    padding: 9px 10px;
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+  }
+
+  select:focus, input:focus {
+    outline: 2px solid var(--amber);
+    outline-offset: -1px;
+  }
+
+  .btn-row { display: flex; gap: 10px; margin-top: 18px; }
+
+  button {
+    flex: 1;
+    padding: 11px 0;
+    border: none;
+    font-family: 'Inter', sans-serif;
+    font-weight: 600;
+    font-size: 14px;
+    cursor: pointer;
+  }
+
+  button.rent { background: var(--go); color: #0C2116; }
+  button.rent:hover { background: #55e296; }
+
+  button.return { background: transparent; color: var(--ink); border: 1px solid var(--panel-line); }
+  button.return:hover { border-color: var(--stop); color: var(--stop); }
+
+  .feedback {
+    margin-top: 14px;
+    font-size: 13px;
+    padding: 10px 12px;
+    display: none;
+    line-height: 1.4;
+  }
+
+  .feedback.ok { background: rgba(63,203,126,0.12); color: var(--go); display: block; }
+  .feedback.err { background: rgba(255,95,69,0.12); color: var(--stop); display: block; }
+
+  .log {
+    margin-top: 22px;
+    border-top: 1px solid var(--panel-line);
+    padding-top: 14px;
+  }
+
+  .log h3 {
+    font-size: 12px;
+    color: var(--ink-dim);
+    margin: 0 0 10px;
+    font-weight: 500;
+  }
+
+  .log ul { list-style: none; margin: 0; padding: 0; max-height: 220px; overflow-y: auto; }
+
+  .log li {
+    font-size: 12.5px;
+    padding: 7px 0;
+    border-top: 1px solid var(--panel-line);
+    color: var(--ink-dim);
+  }
+
+  .log li:first-child { border-top: none; }
+  .log li.ok-line { color: var(--go); }
+  .log li.err-line { color: var(--stop); }
+
+  .empty-log { font-size: 12.5px; color: var(--ink-dim); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Metro Wheels <span>· Dispatch</span></h1>
+  <div class="stat-strip" id="statStrip">
+    <div><span class="num" id="statTotal">–</span><span class="label">Fleet</span></div>
+    <div><span class="num" id="statAvail">–</span><span class="label">Available</span></div>
+    <div><span class="num" id="statRevenue">–</span><span class="label">Revenue</span></div>
+  </div>
+</header>
+
+<main>
+  <div>
+    <p class="section-title">FLEET</p>
+    <div class="fleet-grid" id="fleetGrid"></div>
+  </div>
+
+  <div class="console">
+    <h2>Rent a vehicle</h2>
+
+    <label for="customerSelect">Customer</label>
+    <select id="customerSelect"></select>
+
+    <label for="plateSelect">Vehicle</label>
+    <select id="plateSelect"></select>
+
+    <label for="daysInput">Days</label>
+    <input type="number" id="daysInput" min="1" value="1">
+
+    <div class="btn-row">
+      <button class="rent" id="rentBtn">Rent</button>
+      <button class="return" id="returnBtn">Return</button>
+    </div>
+
+    <div class="feedback" id="feedback"></div>
+
+    <div class="log">
+      <h3>ACTIVITY</h3>
+      <ul id="activityLog"></ul>
+    </div>
+  </div>
+</main>
+
+<script>
+  const fleetGrid = document.getElementById('fleetGrid');
+  const customerSelect = document.getElementById('customerSelect');
+  const plateSelect = document.getElementById('plateSelect');
+  const daysInput = document.getElementById('daysInput');
+  const feedback = document.getElementById('feedback');
+  const activityLog = document.getElementById('activityLog');
+
+  async function loadFleet() {
+    const res = await fetch('/api/vehicles');
+    const vehicles = await res.json();
+
+    fleetGrid.innerHTML = '';
+    plateSelect.innerHTML = '';
+
+    vehicles.forEach(v => {
+      const ticket = document.createElement('div');
+      ticket.className = 'ticket ' + (v.available ? 'available' : 'rented');
+      ticket.innerHTML = `
+        <div class="status-tab">${v.available ? 'AVAILABLE' : 'OUT'}</div>
+        <div class="type">${v.type.toUpperCase()}</div>
+        <div class="plate plate-font">${v.plate}</div>
+        <div class="make-model">${v.year} ${v.make} ${v.model}</div>
+        <div class="row"><span>Daily rate</span><span class="rate">$${v.dailyRate.toFixed(2)}</span></div>
+        <div class="row"><span>Mileage</span><span>${v.mileage.toFixed(1)} mi</span></div>
+      `;
+      fleetGrid.appendChild(ticket);
+
+      const opt = document.createElement('option');
+      opt.value = v.plate;
+      opt.textContent = `${v.plate} — ${v.make} ${v.model} (${v.available ? 'available' : 'out'})`;
+      plateSelect.appendChild(opt);
+    });
+  }
+
+  async function loadCustomers() {
+    const res = await fetch('/api/customers');
+    const customers = await res.json();
+    customerSelect.innerHTML = '';
+    customers.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c.name;
+      opt.textContent = `${c.name} (age ${c.age}, ${c.licenseClass})`;
+      customerSelect.appendChild(opt);
+    });
+  }
+
+  async function loadReport() {
+    const res = await fetch('/api/report');
+    const r = await res.json();
+    document.getElementById('statTotal').textContent = r.totalVehicles;
+    document.getElementById('statAvail').textContent = r.availableVehicles;
+    document.getElementById('statRevenue').textContent = '$' + r.totalRevenue.toFixed(0);
+  }
+
+  function showFeedback(message, ok) {
+    feedback.textContent = message;
+    feedback.className = 'feedback ' + (ok ? 'ok' : 'err');
+  }
+
+  function logActivity(message, ok) {
+    const li = document.createElement('li');
+    li.textContent = message;
+    li.className = ok ? 'ok-line' : 'err-line';
+    activityLog.prepend(li);
+  }
+
+  async function refreshAll() {
+    await Promise.all([loadFleet(), loadCustomers(), loadReport()]);
+  }
+
+  document.getElementById('rentBtn').addEventListener('click', async () => {
+    const customerName = customerSelect.value;
+    const plate = plateSelect.value;
+    const days = daysInput.value;
+
+    const res = await fetch('/api/rent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ customerName, plate, days })
+    });
+    const result = await res.json();
+
+    showFeedback(result.message, result.success);
+    logActivity(`${customerName} → ${plate}: ${result.message}`, result.success);
+
+    if (result.success) await refreshAll();
+  });
+
+  document.getElementById('returnBtn').addEventListener('click', async () => {
+    const plate = plateSelect.value;
+
+    const res = await fetch('/api/return', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plate })
+    });
+    const result = await res.json();
+
+    showFeedback(result.message, result.success);
+    logActivity(`${plate} return: ${result.message}`, result.success);
+
+    if (result.success) await refreshAll();
+  });
+
+  refreshAll();
+</script>
+
+</body>
+</html>
