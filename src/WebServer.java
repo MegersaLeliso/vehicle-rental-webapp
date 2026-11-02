@@ -1,260 +1,504 @@
-import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+
 import java.io.IOException;
-import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Arrays;
+import java.util.Locale;
 
 /**
- * WebServer.java
- *
- * Turns the existing OOP model (Vehicle, Customer, RentalAgency, etc.)
- * into a real web application, using ONLY Java's built-in HttpServer —
- * no frameworks, no dependency downloads. Any machine with a JDK can
- * run this with zero setup.
- *
- * DESIGN CHOICE: This class is intentionally the ONLY new file. Every
- * class we built for the console app (Vehicle, Car, RentalAgency,
- * custom exceptions...) is reused completely unchanged. That's the
- * real payoff of OOP done well: the business logic doesn't care
- * whether it's being driven by a terminal (Main.java) or a browser
- * (this class) — it's the same RentalAgency object either way.
+ * Lightweight HTTP server and JSON API for the vehicle rental application.
  */
 public class WebServer {
 
-    // Shared state across all HTTP requests. In a real production app
-    // this would be a database; here it's the same in-memory objects
-    // from our console version, just kept alive for the server's lifetime.
-    private static final RentalAgency agency = new RentalAgency("Metro Wheels Rentals");
-    private static final Map<String, Customer> customersByName = new LinkedHashMap<>();
-    private static final Map<String, RentalTransaction> activeTransactions = new ConcurrentHashMap<>();
+    private static final int PORT = 8080;
+    private static final int MAX_REQUEST_BYTES = 8192;
 
-    public static void main(String[] args) throws IOException {
-        seedDemoData();
+    private final RentalAgency agency;
+    private final HttpServer server;
 
-        HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
-        server.createContext("/api/vehicles", WebServer::handleVehicles);
-        server.createContext("/api/customers", WebServer::handleCustomers);
-        server.createContext("/api/rent", WebServer::handleRent);
-        server.createContext("/api/return", WebServer::handleReturn);
-        server.createContext("/api/report", WebServer::handleReport);
-        server.createContext("/", WebServer::handleStatic); // serves the frontend
-        server.setExecutor(null);
-        server.start();
-
-        System.out.println("Metro Wheels Rentals web app running at:");
-        System.out.println("  http://localhost:8080");
-        System.out.println("Press Ctrl+C to stop the server.");
+    public WebServer() throws IOException {
+        this.agency = createAgency();
+        this.server = HttpServer.create(new InetSocketAddress(PORT), 0);
+        server.createContext("/", this::handleRequest);
     }
 
-    /** Sets up the same starting fleet and customers as the console demo. */
-    private static void seedDemoData() {
+    public static void main(String[] args) throws IOException {
+        WebServer webServer = new WebServer();
+        webServer.server.start();
+        System.out.println("Vehicle Rental server running at http://localhost:" + PORT);
+    }
+
+    private static RentalAgency createAgency() {
+        RentalAgency agency = new RentalAgency("Metro Wheels Rentals", 10, 10);
         agency.addVehicleToFleet(new Car("CAR-100", "Toyota", "Camry", 2023, 45.00, 5));
         agency.addVehicleToFleet(new Motorcycle("BIKE-200", "Harley-Davidson", "Iron 883", 2022, 35.00, true));
         agency.addVehicleToFleet(new Truck("TRK-300", "Ford", "F-150", 2021, 90.00, 2.5));
 
-        Customer alice = new Customer("Alice Johnson", "D1234567", 30, "Standard", true);
-        Customer bob = new Customer("Bob Young", "D7654321", 19, "Standard", false);
-        Customer carlos = new Customer("Carlos Diaz", "D1122334", 40, "Standard", false);
-        Customer dana = new Customer("Dana Reyes", "D9988776", 35, "Commercial", false);
-
-        for (Customer c : new Customer[]{alice, bob, carlos, dana}) {
-            agency.registerCustomer(c);
-            customersByName.put(c.getName(), c);
-        }
+        agency.registerCustomer(new Customer("Alex Morgan", "LIC-100", 30, "Standard", true));
+        agency.registerCustomer(new Customer("Jamie Lee", "LIC-200", 20, "Standard", false));
+        agency.registerCustomer(new Customer("Taylor Smith", "LIC-300", 35, "Commercial", true));
+        return agency;
     }
 
-    // ============================================================
-    // API HANDLERS
-    // ============================================================
-
-    private static void handleVehicles(HttpExchange exchange) throws IOException {
-        if (!"GET".equals(exchange.getRequestMethod())) {
-            sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
-            return;
-        }
-        StringBuilder json = new StringBuilder("[");
-        List<Vehicle> vehicles = agency.getFleet().getAllVehicles();
-        for (int i = 0; i < vehicles.size(); i++) {
-            json.append(vehicleToJson(vehicles.get(i)));
-            if (i < vehicles.size() - 1) json.append(",");
-        }
-        json.append("]");
-        sendJson(exchange, 200, json.toString());
-    }
-
-    private static void handleCustomers(HttpExchange exchange) throws IOException {
-        if (!"GET".equals(exchange.getRequestMethod())) {
-            sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
-            return;
-        }
-        StringBuilder json = new StringBuilder("[");
-        List<Customer> customers = new ArrayList<>(customersByName.values());
-        for (int i = 0; i < customers.size(); i++) {
-            Customer c = customers.get(i);
-            json.append(String.format(
-                "{\"name\":\"%s\",\"age\":%d,\"licenseClass\":\"%s\",\"helmetCert\":%b}",
-                escapeJson(c.getName()), c.getAge(), c.getLicenseClass(), c.hasHelmetCertification()
-            ));
-            if (i < customers.size() - 1) json.append(",");
-        }
-        json.append("]");
-        sendJson(exchange, 200, json.toString());
-    }
-
-    /**
-     * Handles a rental request from the browser.
-     * This is where POLYMORPHISM still does the real work: we call
-     * agency.rentVehicle(), which internally calls vehicle.checkEligibility()
-     * — the web layer has no idea (and doesn't need to know) whether
-     * that vehicle is a Car, Motorcycle, or Truck.
-     */
-    private static void handleRent(HttpExchange exchange) throws IOException {
-        if (!"POST".equals(exchange.getRequestMethod())) {
-            sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
-            return;
-        }
-        Map<String, String> body = parseJsonBody(exchange);
-        String customerName = body.get("customerName");
-        String plate = body.get("plate");
-        int days;
-        try {
-            days = Integer.parseInt(body.getOrDefault("days", "1"));
-            if (days < 1) throw new NumberFormatException();
-        } catch (NumberFormatException e) {
-            sendJson(exchange, 400, "{\"success\":false,\"message\":\"Enter a valid number of days (1 or more).\"}");
-            return;
-        }
-
-        Customer customer = customersByName.get(customerName);
-        if (customer == null) {
-            sendJson(exchange, 400, "{\"success\":false,\"message\":\"Unknown customer.\"}");
-            return;
-        }
-
-        try {
-            RentalTransaction tx = agency.rentVehicle(customer, plate, days);
-            activeTransactions.put(plate, tx);
-            sendJson(exchange, 200, String.format(
-                "{\"success\":true,\"message\":\"Rented to %s for %d day(s).\",\"totalCost\":%.2f}",
-                escapeJson(customer.getName()), days, tx.getTotalCost()
-            ));
-        } catch (VehicleUnavailableException | EligibilityException e) {
-            // Same custom exceptions from the console app, now surfaced
-            // as a normal JSON error the frontend can display.
-            sendJson(exchange, 200, String.format(
-                "{\"success\":false,\"message\":\"%s\"}", escapeJson(e.getMessage())
-            ));
-        }
-    }
-
-    private static void handleReturn(HttpExchange exchange) throws IOException {
-        if (!"POST".equals(exchange.getRequestMethod())) {
-            sendJson(exchange, 405, "{\"error\":\"Method not allowed\"}");
-            return;
-        }
-        Map<String, String> body = parseJsonBody(exchange);
-        String plate = body.get("plate");
-        RentalTransaction tx = activeTransactions.get(plate);
-        if (tx == null) {
-            sendJson(exchange, 400, "{\"success\":false,\"message\":\"This vehicle has no active rental.\"}");
-            return;
-        }
-        agency.returnVehicle(plate, tx);
-        activeTransactions.remove(plate);
-        sendJson(exchange, 200, "{\"success\":true,\"message\":\"Vehicle returned.\"}");
-    }
-
-    private static void handleReport(HttpExchange exchange) throws IOException {
-        List<Vehicle> vehicles = agency.getFleet().getAllVehicles();
-        int available = agency.getFleet().findAvailableVehicles().size();
-        double totalRevenue = 0.0;
-        for (Customer c : customersByName.values()) {
-            totalRevenue += c.getRentalHistory().getTotalSpent();
-        }
-        String json = String.format(
-            "{\"totalVehicles\":%d,\"availableVehicles\":%d,\"totalCustomers\":%d,\"totalRevenue\":%.2f}",
-            vehicles.size(), available, customersByName.size(), totalRevenue
-        );
-        sendJson(exchange, 200, json);
-    }
-
-    private static String vehicleToJson(Vehicle v) {
-        return String.format(
-            "{\"plate\":\"%s\",\"type\":\"%s\",\"make\":\"%s\",\"model\":\"%s\",\"year\":%d,\"dailyRate\":%.2f,\"mileage\":%.1f,\"available\":%b}",
-            escapeJson(v.getLicensePlate()), v.getVehicleType(), escapeJson(v.getMake()),
-            escapeJson(v.getModel()), v.getYear(), v.getBaseDailyRate(), v.getMileage(), v.isAvailable()
-        );
-    }
-
-    // ============================================================
-    // STATIC FILE SERVING (the frontend lives in /public)
-    // ============================================================
-
-    private static void handleStatic(HttpExchange exchange) throws IOException {
+    private void handleRequest(HttpExchange exchange) throws IOException {
         String path = exchange.getRequestURI().getPath();
-        if (path.equals("/")) path = "/index.html";
+        String method = exchange.getRequestMethod();
 
-        Path filePath = Paths.get("public" + path);
-        if (!Files.exists(filePath) || Files.isDirectory(filePath)) {
-            byte[] notFound = "404 Not Found".getBytes(StandardCharsets.UTF_8);
-            exchange.sendResponseHeaders(404, notFound.length);
-            try (OutputStream os = exchange.getResponseBody()) {
-                os.write(notFound);
-            }
+        if ("/".equals(path) && "GET".equals(method)) {
+            sendHtml(exchange, Files.readString(Path.of("public", "index.html"), StandardCharsets.UTF_8));
             return;
         }
 
-        byte[] bytes = Files.readAllBytes(filePath);
-        String contentType = path.endsWith(".css") ? "text/css"
-                : path.endsWith(".js") ? "application/javascript"
-                : "text/html";
-        exchange.getResponseHeaders().set("Content-Type", contentType + "; charset=utf-8");
-        exchange.sendResponseHeaders(200, bytes.length);
-        try (OutputStream os = exchange.getResponseBody()) {
-            os.write(bytes);
+        try {
+            switch (path) {
+                case "/api/vehicles":
+                    requireMethod(method, "GET");
+                    sendJson(exchange, 200, vehiclesJson());
+                    break;
+                case "/api/customers":
+                    requireMethod(method, "GET");
+                    sendJson(exchange, 200, customersJson());
+                    break;
+                case "/api/rent":
+                    requireMethod(method, "POST");
+                    handleRent(exchange);
+                    break;
+                case "/api/return":
+                    requireMethod(method, "POST");
+                    handleReturn(exchange);
+                    break;
+                case "/api/report":
+                    requireMethod(method, "GET");
+                    sendJson(exchange, 200, reportJson());
+                    break;
+                default:
+                    sendJson(exchange, 404, "{\"success\":false,\"message\":\"Endpoint not found.\"}");
+            }
+        } catch (IllegalArgumentException exception) {
+            sendJson(exchange, 400, resultJson(false, exception.getMessage(), null));
+        } catch (MethodNotAllowedException exception) {
+            exchange.getResponseHeaders().set("Allow", exception.allowedMethod);
+            sendJson(exchange, 405, resultJson(false, exception.getMessage(), null));
+        } catch (IllegalStateException exception) {
+            sendJson(exchange, 409, resultJson(false, exception.getMessage(), null));
         }
     }
 
-    // ============================================================
-    // SMALL HELPERS (no external JSON library needed for this scale)
-    // ============================================================
+    private void handleRent(HttpExchange exchange) throws IOException {
+        RentalRequest request = parseRentalRequest(readRequestBody(exchange));
+        synchronized (agency) {
+            Customer customer = agency.findCustomerByName(request.customerName);
+            if (customer == null) {
+                sendJson(exchange, 400, resultJson(false, "Customer is not registered.", null));
+                return;
+            }
 
-    private static void sendJson(HttpExchange exchange, int status, String json) throws IOException {
+            try {
+                RentalTransaction transaction = agency.rentVehicle(customer, request.plate, request.days);
+                sendJson(exchange, 200, resultJson(true, "Rental confirmed.", transaction.getTotalCost()));
+            } catch (VehicleUnavailableException | EligibilityException exception) {
+                sendJson(exchange, 400, resultJson(false, exception.getMessage(), null));
+            }
+        }
+    }
+
+    private void handleReturn(HttpExchange exchange) throws IOException {
+        RentalRequest request = parseReturnRequest(readRequestBody(exchange));
+        synchronized (agency) {
+            boolean returned = agency.returnVehicle(request.plate);
+            String message = returned
+                    ? "Vehicle " + request.plate + " has been returned."
+                    : "No active rental found for plate " + request.plate + ".";
+            sendJson(exchange, returned ? 200 : 400, resultJson(returned, message, null));
+        }
+    }
+
+    private String vehiclesJson() {
+        synchronized (agency) {
+            Vehicle[] vehicles = agency.getFleet().getAllVehicles();
+            StringBuilder json = new StringBuilder("[");
+            for (int i = 0; i < vehicles.length; i++) {
+                Vehicle vehicle = vehicles[i];
+                if (i > 0) {
+                    json.append(',');
+                }
+                json.append('{')
+                        .append("\"plate\":\"").append(jsonEscape(vehicle.getLicensePlate())).append("\",")
+                        .append("\"type\":\"").append(jsonEscape(vehicle.getVehicleType())).append("\",")
+                        .append("\"make\":\"").append(jsonEscape(vehicle.getMake())).append("\",")
+                        .append("\"model\":\"").append(jsonEscape(vehicle.getModel())).append("\",")
+                        .append("\"year\":").append(vehicle.getYear()).append(',')
+                        .append("\"dailyRate\":").append(numberJson(vehicle.getBaseDailyRate())).append(',')
+                        .append("\"available\":").append(vehicle.isAvailable()).append(',')
+                        .append("\"info\":\"").append(jsonEscape(vehicle.getInfo())).append("\"}");
+            }
+            return json.append(']').toString();
+        }
+    }
+
+    private String customersJson() {
+        synchronized (agency) {
+            Customer[] customers = agency.getCustomers();
+            StringBuilder json = new StringBuilder("[");
+            for (int i = 0; i < customers.length; i++) {
+                Customer customer = customers[i];
+                if (i > 0) {
+                    json.append(',');
+                }
+                json.append('{')
+                        .append("\"name\":\"").append(jsonEscape(customer.getName())).append("\",")
+                        .append("\"licenseNumber\":\"").append(jsonEscape(customer.getLicenseNumber())).append("\",")
+                        .append("\"age\":").append(customer.getAge()).append(',')
+                        .append("\"licenseClass\":\"").append(jsonEscape(customer.getLicenseClass())).append("\",")
+                        .append("\"helmetCertification\":").append(customer.hasHelmetCertification()).append('}');
+            }
+            return json.append(']').toString();
+        }
+    }
+
+    private String reportJson() {
+        synchronized (agency) {
+            Vehicle[] vehicles = agency.getFleet().getAllVehicles();
+            int availableCount = (int) Arrays.stream(vehicles)
+                    .filter(Vehicle::isAvailable)
+                    .count();
+            return "{"
+                    + "\"agencyName\":\"" + jsonEscape(agency.getAgencyName()) + "\","
+                    + "\"totalFleetCount\":" + vehicles.length + ","
+                    + "\"availableCount\":" + availableCount + ","
+                    + "\"totalRevenue\":" + numberJson(agency.getTotalRevenue()) + ","
+                    + "\"customerCount\":" + agency.getCustomers().length
+                    + "}";
+        }
+    }
+
+    private static String resultJson(boolean success, String message, Double totalCost) {
+        StringBuilder json = new StringBuilder("{")
+                .append("\"success\":").append(success).append(',')
+                .append("\"message\":\"").append(jsonEscape(message)).append('"');
+        if (totalCost != null) {
+            json.append(",\"totalCost\":").append(numberJson(totalCost));
+        }
+        return json.append('}').toString();
+    }
+
+    private static RentalRequest parseRentalRequest(String body) {
+        JsonObjectParser parser = new JsonObjectParser(body);
+        String customerName = parser.stringField("customerName");
+        String plate = parser.stringField("plate");
+        int days = parser.integerField("days");
+        parser.finish();
+        if (customerName.isBlank() || plate.isBlank()) {
+            throw new IllegalArgumentException("customerName and plate are required.");
+        }
+        if (days <= 0) {
+            throw new IllegalArgumentException("Rental days must be greater than zero.");
+        }
+        return new RentalRequest(customerName, plate, days);
+    }
+
+    private static RentalRequest parseReturnRequest(String body) {
+        JsonObjectParser parser = new JsonObjectParser(body);
+        String plate = parser.stringField("plate");
+        parser.finish();
+        if (plate.isBlank()) {
+            throw new IllegalArgumentException("plate is required.");
+        }
+        return new RentalRequest(null, plate, 0);
+    }
+
+    private static String readRequestBody(HttpExchange exchange) throws IOException {
+        byte[] body;
+        try (java.io.InputStream requestBody = exchange.getRequestBody()) {
+            body = requestBody.readNBytes(MAX_REQUEST_BYTES + 1);
+        }
+        if (body.length > MAX_REQUEST_BYTES) {
+            throw new IllegalArgumentException("Request body exceeds the allowed size.");
+        }
+        return new String(body, StandardCharsets.UTF_8);
+    }
+
+    private static void requireMethod(String actualMethod, String expectedMethod) {
+        if (!expectedMethod.equals(actualMethod)) {
+            throw new MethodNotAllowedException(expectedMethod);
+        }
+    }
+
+    private static void sendJson(HttpExchange exchange, int status, String body) throws IOException {
         exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
-        byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
-        exchange.sendResponseHeaders(status, bytes.length);
-        try (OutputStream os = exchange.getResponseBody()) {
-            os.write(bytes);
+        sendResponse(exchange, status, body);
+    }
+
+    private static void sendHtml(HttpExchange exchange, String body) throws IOException {
+        exchange.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
+        sendResponse(exchange, 200, body);
+    }
+
+    private static void sendResponse(HttpExchange exchange, int status, String body) throws IOException {
+        byte[] response = body.getBytes(StandardCharsets.UTF_8);
+        exchange.sendResponseHeaders(status, response.length);
+        exchange.getResponseBody().write(response);
+        exchange.getResponseBody().close();
+    }
+
+    private static String numberJson(double value) {
+        return String.format(Locale.ROOT, "%.2f", value);
+    }
+
+    private static String jsonEscape(String value) {
+        StringBuilder escaped = new StringBuilder();
+        for (int i = 0; i < value.length(); i++) {
+            char character = value.charAt(i);
+            switch (character) {
+                case '"':
+                    escaped.append("\\\"");
+                    break;
+                case '\\':
+                    escaped.append("\\\\");
+                    break;
+                case '\b':
+                    escaped.append("\\b");
+                    break;
+                case '\f':
+                    escaped.append("\\f");
+                    break;
+                case '\n':
+                    escaped.append("\\n");
+                    break;
+                case '\r':
+                    escaped.append("\\r");
+                    break;
+                case '\t':
+                    escaped.append("\\t");
+                    break;
+                default:
+                    if (character < 0x20) {
+                        escaped.append(String.format(Locale.ROOT, "\\u%04x", (int) character));
+                    } else {
+                        escaped.append(character);
+                    }
+            }
+        }
+        return escaped.toString();
+    }
+
+    private static final class RentalRequest {
+        private final String customerName;
+        private final String plate;
+        private final int days;
+
+        private RentalRequest(String customerName, String plate, int days) {
+            this.customerName = customerName;
+            this.plate = plate;
+            this.days = days;
         }
     }
 
-    /** Minimal parser for flat, single-level JSON objects like {"key":"value"}. */
-    private static Map<String, String> parseJsonBody(HttpExchange exchange) throws IOException {
-        String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8).trim();
-        Map<String, String> map = new HashMap<>();
-        if (body.startsWith("{") && body.endsWith("}")) {
-            body = body.substring(1, body.length() - 1);
-            for (String pair : body.split(",(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)")) {
-                String[] kv = pair.split(":", 2);
-                if (kv.length == 2) {
-                    map.put(stripQuotes(kv[0]), stripQuotes(kv[1]));
+    private static final class MethodNotAllowedException extends RuntimeException {
+        private final String allowedMethod;
+
+        private MethodNotAllowedException(String allowedMethod) {
+            super("Method not allowed.");
+            this.allowedMethod = allowedMethod;
+        }
+    }
+
+    private static final class JsonObjectParser {
+        private final String input;
+        private int position;
+        private String customerName;
+        private String plate;
+        private Integer days;
+
+        private JsonObjectParser(String input) {
+            this.input = input;
+            parseObject();
+        }
+
+        private String stringField(String field) {
+            String value;
+            if ("customerName".equals(field)) {
+                value = customerName;
+            } else if ("plate".equals(field)) {
+                value = plate;
+            } else {
+                throw invalidJson();
+            }
+            if (value == null) {
+                throw new IllegalArgumentException("Missing required field: " + field);
+            }
+            return value;
+        }
+
+        private int integerField(String field) {
+            if (!"days".equals(field) || days == null) {
+                throw new IllegalArgumentException("Missing required field: " + field);
+            }
+            return days;
+        }
+
+        private void finish() {
+            skipWhitespace();
+            if (position != input.length()) {
+                throw invalidJson();
+            }
+        }
+
+        private void parseObject() {
+            skipWhitespace();
+            expect('{');
+            boolean firstField = true;
+            while (true) {
+                skipWhitespace();
+                if (take('}')) {
+                    break;
+                }
+                if (!firstField) {
+                    expect(',');
+                    skipWhitespace();
+                    if (position < input.length() && input.charAt(position) == '}') {
+                        throw invalidJson();
+                    }
+                }
+                firstField = false;
+
+                String key = parseString();
+                skipWhitespace();
+                expect(':');
+                skipWhitespace();
+                switch (key) {
+                    case "customerName":
+                        if (customerName != null) {
+                            throw invalidJson();
+                        }
+                        customerName = parseString();
+                        break;
+                    case "plate":
+                        if (plate != null) {
+                            throw invalidJson();
+                        }
+                        plate = parseString();
+                        break;
+                    case "days":
+                        if (days != null) {
+                            throw invalidJson();
+                        }
+                        days = parseInteger();
+                        break;
+                    default:
+                        throw new IllegalArgumentException("Unexpected request field: " + key);
                 }
             }
         }
-        return map;
-    }
 
-    private static String stripQuotes(String s) {
-        return s.trim().replaceAll("^\"|\"$", "");
-    }
+        private int parseInteger() {
+            int start = position;
+            if (position < input.length() && input.charAt(position) == '-') {
+                position++;
+            }
+            int digitStart = position;
+            while (position < input.length()
+                    && input.charAt(position) >= '0'
+                    && input.charAt(position) <= '9') {
+                position++;
+            }
+            if (digitStart == position) {
+                throw invalidJson();
+            }
+            if (input.charAt(digitStart) == '0' && position - digitStart > 1) {
+                throw invalidJson();
+            }
+            try {
+                return Integer.parseInt(input.substring(start, position));
+            } catch (NumberFormatException exception) {
+                throw invalidJson();
+            }
+        }
 
-    private static String escapeJson(String s) {
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+        private String parseString() {
+            expect('"');
+            StringBuilder value = new StringBuilder();
+            while (position < input.length()) {
+                char character = input.charAt(position++);
+                if (character == '"') {
+                    return value.toString();
+                }
+                if (character < 0x20) {
+                    throw invalidJson();
+                }
+                if (character != '\\') {
+                    value.append(character);
+                    continue;
+                }
+                if (position >= input.length()) {
+                    throw invalidJson();
+                }
+                char escape = input.charAt(position++);
+                switch (escape) {
+                    case '"':
+                    case '\\':
+                    case '/':
+                        value.append(escape);
+                        break;
+                    case 'b':
+                        value.append('\b');
+                        break;
+                    case 'f':
+                        value.append('\f');
+                        break;
+                    case 'n':
+                        value.append('\n');
+                        break;
+                    case 'r':
+                        value.append('\r');
+                        break;
+                    case 't':
+                        value.append('\t');
+                        break;
+                    case 'u':
+                        if (position + 4 > input.length()) {
+                            throw invalidJson();
+                        }
+                        try {
+                            value.append((char) Integer.parseInt(input.substring(position, position + 4), 16));
+                        } catch (NumberFormatException exception) {
+                            throw invalidJson();
+                        }
+                        position += 4;
+                        break;
+                    default:
+                        throw invalidJson();
+                }
+            }
+            throw invalidJson();
+        }
+
+        private void skipWhitespace() {
+            while (position < input.length() && Character.isWhitespace(input.charAt(position))) {
+                position++;
+            }
+        }
+
+        private boolean take(char expected) {
+            if (position < input.length() && input.charAt(position) == expected) {
+                position++;
+                return true;
+            }
+            return false;
+        }
+
+        private void expect(char expected) {
+            if (!take(expected)) {
+                throw invalidJson();
+            }
+        }
+
+        private IllegalArgumentException invalidJson() {
+            return new IllegalArgumentException("Request body must be a valid JSON object with the required fields.");
+        }
     }
 }

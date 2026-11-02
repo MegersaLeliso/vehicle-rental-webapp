@@ -1,67 +1,55 @@
-import java.util.ArrayList;
-import java.util.List;
+import java.util.Arrays;
+import java.util.Objects;
 
 /**
- * Fleet.java
- *
- * Manages the collection of Vehicles owned by a RentalAgency.
- *
- * DESIGN CHOICE: Fleet works entirely in terms of the abstract Vehicle
- * type. It never checks "is this a Car or Truck?" — it doesn't need to.
- * This is POLYMORPHISM at the collection level: a List<Vehicle> can
- * transparently hold Cars, Motorcycles, and Trucks together, and every
- * method here (like findAvailableVehicles) works identically regardless
- * of the concrete subtype.
+ * Manages the vehicles owned by a RentalAgency.
  */
 public class Fleet {
 
-    private final List<Vehicle> vehicles;
+    private final Vehicle[] vehicles;
+    private int count;
 
-    public Fleet() {
-        this.vehicles = new ArrayList<>();
+    public Fleet(int capacity) {
+        if (capacity < 0) {
+            throw new IllegalArgumentException("Fleet capacity cannot be negative.");
+        }
+        this.vehicles = new Vehicle[capacity];
     }
 
     public void addVehicle(Vehicle vehicle) {
-        vehicles.add(vehicle);
+        Objects.requireNonNull(vehicle, "Vehicle cannot be null.");
+        if (count == vehicles.length) {
+            throw new IllegalStateException("Fleet has reached its vehicle capacity.");
+        }
+        vehicles[count++] = vehicle;
     }
 
     /**
      * Returns all vehicles currently available to rent.
      */
-    public List<Vehicle> findAvailableVehicles() {
-        List<Vehicle> available = new ArrayList<>();
-        for (Vehicle v : vehicles) {
-            if (v.isAvailable()) {
-                available.add(v);
-            }
-        }
-        return available;
+    public Vehicle[] findAvailableVehicles() {
+        return Arrays.stream(vehicles, 0, count)
+                .filter(Vehicle::isAvailable)
+                .toArray(Vehicle[]::new);
     }
 
     /**
      * Finds a vehicle by license plate, or null if not found.
-     * RentalAgency is responsible for handling a null result —
-     * Fleet just reports facts about the collection it manages.
      */
     public Vehicle findVehicleByPlate(String plate) {
-        for (Vehicle v : vehicles) {
-            if (v.getLicensePlate().equalsIgnoreCase(plate)) {
-                return v;
-            }
-        }
-        return null;
+        return Arrays.stream(vehicles, 0, count)
+                .filter(vehicle -> vehicle.getLicensePlate().equalsIgnoreCase(plate))
+                .findFirst()
+                .orElse(null);
     }
 
-    public List<Vehicle> getAllVehicles() {
-        return new ArrayList<>(vehicles); // defensive copy, same reasoning as RentalHistory
+    public Vehicle[] getAllVehicles() {
+        return Arrays.copyOf(vehicles, count);
     }
 
     public void printFleetStatus() {
         System.out.println("=== Fleet Status ===");
-        for (Vehicle v : vehicles) {
-            // POLYMORPHISM IN ACTION: v.getInfo() calls each vehicle's
-            // own overridden version, even though 'v' is typed as Vehicle.
-            System.out.println(v.getInfo());
-        }
+        Arrays.stream(vehicles, 0, count)
+                .forEach(vehicle -> System.out.println(vehicle.getInfo()));
     }
 }

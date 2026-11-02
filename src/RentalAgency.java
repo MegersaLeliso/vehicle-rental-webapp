@@ -1,5 +1,5 @@
-import java.util.ArrayList;
-import java.util.List;
+import java.util.Arrays;
+import java.util.Objects;
 
 /**
  * RentalAgency.java
@@ -19,20 +19,28 @@ public class RentalAgency {
 
     private final String agencyName;
     private final Fleet fleet; // COMPOSITION: agency owns and manages its fleet
-    private final List<Customer> customers;
+    private final Customer[] customers;
+    private int customerCount;
 
-    public RentalAgency(String agencyName) {
+    public RentalAgency(String agencyName, int vehicleCapacity, int customerCapacity) {
+        if (customerCapacity < 0) {
+            throw new IllegalArgumentException("Customer capacity cannot be negative.");
+        }
         this.agencyName = agencyName;
-        this.fleet = new Fleet();
-        this.customers = new ArrayList<>();
+        this.fleet = new Fleet(vehicleCapacity);
+        this.customers = new Customer[customerCapacity];
     }
 
-    public void addVehicleToFleet(Vehicle vehicle) {
+    public synchronized void addVehicleToFleet(Vehicle vehicle) {
         fleet.addVehicle(vehicle);
     }
 
-    public void registerCustomer(Customer customer) {
-        customers.add(customer);
+    public synchronized void registerCustomer(Customer customer) {
+        Objects.requireNonNull(customer, "Customer cannot be null.");
+        if (customerCount == customers.length) {
+            throw new IllegalStateException("Agency has reached its customer capacity.");
+        }
+        customers[customerCount++] = customer;
     }
 
     /**
@@ -41,10 +49,21 @@ public class RentalAgency {
      * Throws specific, meaningful exceptions instead of returning null
      * or a boolean — this forces calling code (see Main.java) to
      * explicitly handle each failure case rather than silently
-     * ignoring a bad rental.
+     * ignoring a bad rental in the server router.
      */
-    public RentalTransaction rentVehicle(Customer customer, String licensePlate, int days)
+    public synchronized RentalTransaction rentVehicle(Customer customer, String licensePlate, int days)
             throws VehicleUnavailableException, EligibilityException {
+        if (customer == null) {
+            throw new IllegalArgumentException("Customer is required.");
+        }
+        if (days <= 0) {
+            throw new IllegalArgumentException("Rental days must be greater than zero.");
+        }
+        boolean registered = Arrays.stream(customers, 0, customerCount)
+                .anyMatch(registeredCustomer -> registeredCustomer == customer);
+        if (!registered) {
+            throw new IllegalArgumentException("Customer is not registered with this agency.");
+        }
 
         Vehicle vehicle = fleet.findVehicleByPlate(licensePlate);
 
@@ -70,10 +89,9 @@ public class RentalAgency {
         }
 
         double cost = vehicle.calculateRentalCost(days);
-        vehicle.rent();
-
         RentalTransaction transaction = new RentalTransaction(vehicle, customer, days, cost);
         customer.addRentalRecord(transaction);
+        vehicle.rent();
 
         return transaction;
     }
@@ -82,38 +100,65 @@ public class RentalAgency {
      * Processes the return of a vehicle, completing its transaction
      * and making it available again.
      */
-    public void returnVehicle(String licensePlate, RentalTransaction transaction) {
+    public synchronized boolean returnVehicle(String licensePlate) {
         Vehicle vehicle = fleet.findVehicleByPlate(licensePlate);
-        if (vehicle == null) {
-            System.out.println("Cannot return vehicle: plate not found in fleet.");
-            return;
+        if (vehicle == null || vehicle.isAvailable()) {
+            return false;
         }
+
+        RentalTransaction transaction = Arrays.stream(customers, 0, customerCount)
+                .flatMap(customer -> Arrays.stream(customer.getRentalHistory().getTransactions()))
+                .filter(rental -> !rental.isReturned()
+                        && rental.getVehicle().getLicensePlate().equalsIgnoreCase(licensePlate))
+                .findFirst()
+                .orElse(null);
+        if (transaction == null) {
+            return false;
+        }
+
         vehicle.returnVehicle();
         transaction.completeTransaction();
-        System.out.println(vehicle.getVehicleType() + " (" + licensePlate + ") has been returned. Thank you!");
+        return true;
+    }
+
+    public synchronized Customer[] getCustomers() {
+        return Arrays.copyOf(customers, customerCount);
+    }
+
+    public synchronized Customer findCustomerByName(String name) {
+        if (name == null) {
+            return null;
+        }
+        return Arrays.stream(customers, 0, customerCount)
+                .filter(customer -> customer.getName().equalsIgnoreCase(name))
+                .findFirst()
+                .orElse(null);
+    }
+
+    public synchronized double getTotalRevenue() {
+        return Arrays.stream(customers, 0, customerCount)
+                .mapToDouble(customer -> customer.getRentalHistory().getTotalSpent())
+                .sum();
     }
 
     /**
      * Generates a simple summary report of agency activity.
      */
-    public void generateReport() {
+    public synchronized void generateReport() {
         System.out.println("=== " + agencyName + " - Agency Report ===");
-        System.out.println("Total vehicles in fleet: " + fleet.getAllVehicles().size());
-        System.out.println("Available vehicles: " + fleet.findAvailableVehicles().size());
-        System.out.println("Registered customers: " + customers.size());
+        System.out.println("Total vehicles in fleet: " + fleet.getAllVehicles().length);
+        System.out.println("Available vehicles: " + fleet.findAvailableVehicles().length);
+        System.out.println("Registered customers: " + customerCount);
 
-        double totalRevenue = 0.0;
-        for (Customer c : customers) {
-            totalRevenue += c.getRentalHistory().getTotalSpent();
-        }
+        double totalRevenue = getTotalRevenue();
         System.out.printf("Total revenue collected: $%.2f%n", totalRevenue);
     }
 
-    public Fleet getFleet() {
+    public synchronized Fleet getFleet() {
         return fleet;
     }
 
-    public String getAgencyName() {
+    public synchronized String getAgencyName() {
         return agencyName;
     }
 }
